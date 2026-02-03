@@ -1,0 +1,3167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Migration Presentation: NestJS/Next.js -> Next.js/Supabase</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link
+      rel="stylesheet"
+      href="node_modules/reveal.js/dist/reveal.css"
+    />
+    <link
+      rel="stylesheet"
+      href="node_modules/reveal.js/dist/theme/white.css"
+      id="theme"
+    />
+    <link
+      rel="stylesheet"
+      href="node_modules/reveal.js/plugin/highlight/monokai.css"
+    />
+    <link rel="stylesheet" href="presentation.css" />
+  </head>
+  <body>
+    <div class="reveal">
+      <div class="slides">
+        <section
+          class="title-slide"
+          data-background-gradient="linear-gradient(135deg, #0b1320 0%, #16233a 45%, #0f3b4d 100%)"
+        >
+          <div class="kicker">Full Cloud Migration Report</div>
+          <h1>NestJS/Next.js -> Next.js/Supabase</h1>
+          <p class="subtitle">
+            Gjergj's analysis with step-by-step execution plan
+          </p>
+          <div class="meta">
+            <div>Author: tsarchghs (GitHub), migration executed by Gjergj</div>
+          </div>
+        </section>
+
+        <section class="two-col">
+          <div>
+            <h2>Executive Summary</h2>
+            <p>
+              The migration consolidated API responsibilities inside Next.js,
+              shifted privileged operations into Supabase Edge Functions, and
+              aligned local and cloud configuration for seamless deployment.
+            </p>
+            <ul>
+              <li>Contracts preserved; behavior kept stable</li>
+              <li>Privileged ops isolated to Edge runtime</li>
+              <li>Configuration cleaned for least-privilege access</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Starting Point</h3>
+            <p class="small">
+              Source repository:
+              <a
+                href="https://github.com/tsarchghs/antd-versionof-with-supabase"
+                target="_blank"
+                rel="noreferrer"
+              >
+                antd-versionof-with-supabase
+              </a>
+            </p>
+            <p class="small">
+              The remainder of the presentation narrates how a student migrates
+              from the starting code to the final outcome without referencing
+              target branches.
+            </p>
+          </div>
+        </section>
+
+        <section class="two-col">
+          <div>
+            <h2>Before vs After</h2>
+            <p>
+              The system transitions from a dual-backend model to a
+              Next.js-first application with Edge Functions for privileged
+              operations.
+            </p>
+            <div class="legend">
+              <div class="chip chip-legacy">Legacy Runtime</div>
+              <div class="chip chip-new">Target Runtime</div>
+              <div class="chip chip-secure">Privileged Boundary</div>
+            </div>
+          </div>
+          <div class="diagram">
+            <div class="row">
+              <div class="box legacy">NestJS API</div>
+              <div class="arrow">-></div>
+              <div class="box legacy">Next.js UI</div>
+            </div>
+            <div class="row">
+              <div class="box new">Next.js API</div>
+              <div class="arrow">-></div>
+              <div class="box new">Next.js UI</div>
+            </div>
+            <div class="row">
+              <div class="box secure">Edge Functions</div>
+              <div class="arrow">-></div>
+              <div class="box new">Supabase</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="agenda">
+          <h2>Agenda</h2>
+          <ol>
+            <li>Baseline and route inventory</li>
+            <li>Next.js API reconstruction</li>
+            <li>Privileged operations to Edge</li>
+            <li>Configuration and deployment</li>
+            <li>student migration guide</li>
+          </ol>
+        </section>
+
+        <section>
+          <h2>Step 1: Baseline Mapping</h2>
+          <p>
+            The analysis begins with a structured inventory of controllers and
+            the client calls that depend on them. This produces a compatibility
+            map, which becomes the contract for the migration.
+          </p>
+          <pre><code class="language-bash" data-trim>
+rg --files -g "*.controller.ts" src
+rg --files -g "route.ts" frontend/app/api
+          </code></pre>
+          <p class="small">
+            Outcome: a list of endpoints that must be preserved and a split
+            between privileged and non-privileged operations.
+          </p>
+        </section>
+
+        <section>
+          <h2>Step 2: Rebuild API in Next.js</h2>
+          <p>
+            Controllers are translated to Next.js route handlers. The emphasis
+            is on functional equivalence and preserving input/output shapes.
+          </p>
+          <pre><code class="language-ts" data-trim>
+// frontend/app/api/projects/[id]/route.ts
+export async function PATCH(request, { params }) {
+  const { supabase } = await requireAuth(request);
+  const projectId = requireUuid(params.id, "id");
+  const body = await request.json();
+  const { data } = await supabase
+    .from("projects")
+    .update(body)
+    .eq("id", projectId)
+    .select("*")
+    .single();
+  return Response.json(data);
+}
+          </code></pre>
+        </section>
+
+        <section>
+          <h2>Step 3: Privileged Ops to Edge</h2>
+          <p>
+            Operations requiring service-level keys are isolated in Edge
+            Functions. The Next.js API becomes an orchestration layer.
+          </p>
+          <pre><code class="language-ts" data-trim>
+// supabase/functions/companies-create/index.ts
+serve(async (req) => {
+  const { user } = requireAuth(req);
+  const { name } = await req.json();
+  const admin = createAdminClient();
+  const { data } = await admin.from("companies")
+    .insert({ name }).select("*").single();
+  return jsonResponse(data);
+});
+          </code></pre>
+        </section>
+
+        <section>
+          <h2>Step 4: Align Configuration</h2>
+          <p>
+            Local auth and redirect rules are updated to target the Next.js
+            origin. Edge Function secrets are centralized.
+          </p>
+          <pre><code class="language-ini" data-trim>
+[auth]
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = [
+  "http://127.0.0.1:3000/auth/confirm",
+  "http://127.0.0.1:3000/auth/invite",
+]
+          </code></pre>
+        </section>
+
+        <section>
+          <h2>Diff Example: Route to Edge Function</h2>
+          <p class="small">
+            The Next.js route now delegates to an Edge Function instead of using
+            service-level credentials.
+          </p>
+          <pre><code class="language-diff" data-trim>
+- const admin = getAdminClient();
+- const { data } = await admin.from("companies").insert({ name });
++ const data = await invokeEdgeFunction(
++   supabase,
++   "companies-create",
++   { name }
++ );
+          </code></pre>
+        </section>
+
+        <section class="two-col">
+          <div>
+            <h2>Batch Change: Remove vs Replace</h2>
+            <p class="small">
+              Students can follow these batches without looking at the target
+              branch. Each batch lists what to remove and what to add.
+            </p>
+            <ul>
+              <li>Remove service-role usage in Next.js routes</li>
+              <li>Add Edge Function invoke helpers</li>
+              <li>Add function env and secrets</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Batch 1: Remove</h3>
+            <pre><code class="language-diff" data-trim>
+- import { getAdminClient } from "@/lib/api/auth";
+- const admin = getAdminClient();
+- const { data } = await admin.from("table");
+            </code></pre>
+          </div>
+        </section>
+
+        <section class="two-col">
+          <div class="card">
+            <h3>Batch 2: Replace</h3>
+            <pre><code class="language-ts" data-trim>
+import { invokeEdgeFunction } from "@/lib/api/edge";
+const data = await invokeEdgeFunction(
+  supabase,
+  "function-name",
+  { payload: "value" }
+);
+            </code></pre>
+          </div>
+          <div>
+            <h2>Edge Function Hook</h2>
+            <p class="small">
+              The Next.js API remains for compatibility, but privileged logic is
+              routed to Edge. This keeps contracts stable while isolating keys.
+            </p>
+          </div>
+        </section>
+
+        <section>
+          <h2>Batch 3: Add Function Env</h2>
+          <p class="small">
+            Service credentials move into the Edge runtime environment.
+          </p>
+          <pre><code class="language-bash" data-trim>
+# supabase/functions/.env
+SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_ANON_KEY=sb_publishable_xxx
+SERVICE_ROLE_KEY=sb_secret_xxx
+FRONTEND_URL=http://127.0.0.1:3000
+SUPABASE_ATTACHMENTS_BUCKET=attachments
+          </code></pre>
+        </section>
+
+        <section>
+          <h2>Batch 4: Update Config</h2>
+          <p class="small">
+            Align auth redirects to the Next.js origin for a consistent login
+            and invite flow.
+          </p>
+          <pre><code class="language-ini" data-trim>
+[auth]
+site_url = "http://127.0.0.1:3000"
+additional_redirect_urls = [
+  "http://127.0.0.1:3000/auth/confirm",
+  "http://127.0.0.1:3000/auth/invite",
+]
+          </code></pre>
+        </section>
+
+        <section class="two-col">
+          <div>
+            <h2>Key Artifacts Created</h2>
+            <ul>
+              <li>Next.js API routes for all legacy controllers</li>
+              <li>Shared API utilities for validation and errors</li>
+              <li>Edge Functions with shared runtime helpers</li>
+              <li>Config alignment for local and cloud</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Edge Functions</h3>
+            <ul>
+              <li>auth-invite</li>
+              <li>attachments-upload-url</li>
+              <li>companies-create</li>
+              <li>profiles-me</li>
+            </ul>
+          </div>
+        </section>
+
+                <section>
+          <h2>Migration Guide</h2>
+          <p class="small">A complete, self-contained path from the starting code to the final architecture. Each step includes exact code blocks to add or update.</p>
+        </section>
+
+        <section>
+          <h3>Step 1: Create a migration checklist</h3>
+          <p>The student creates a checklist to track controllers, routes, and privileged operations.</p>
+          <pre><code class="language-text" data-trim>
+          # ADD file: docs/migration-checklist.md
+          # Migration Checklist
+          
+          ## Controllers
+          - src/auth/auth.controller.ts
+          - src/attachments/attachments.controller.ts
+          - src/companies/companies.controller.ts
+          - src/profiles/profiles.controller.ts
+          - src/projects/projects.controller.ts
+          - src/projects/project-members.controller.ts
+          - src/tasks/tasks.controller.ts
+          - src/tasks/project-tasks.controller.ts
+          - src/work-logs/work-logs.controller.ts
+          - src/work-logs/task-work-logs.controller.ts
+          - src/work-logs/project-work-logs.controller.ts
+          - src/approvals/approvals.controller.ts
+          - src/reports/reports.controller.ts
+          - src/dashboard/dashboard.controller.ts
+          
+          ## Frontend endpoints
+          - frontend/api/endpoints.ts
+          
+          ## Privileged operations
+          - POST /auth/invite
+          - POST /attachments/upload-url
+          - POST /companies
+          - PATCH /profiles/me (admin fallback)
+          
+          ## Completed
+          - [ ] API helpers
+          - [ ] Next.js routes
+          - [ ] Edge functions
+          - [ ] Env/config alignment
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 2: Fix API base URL joining</h3>
+          <p>The student ensures API paths are joined correctly under /api.</p>
+          <pre><code class="language-ts" data-trim>
+          # UPDATE file: frontend/api/client.ts
+          export class ApiError extends Error {
+            status: number;
+            payload: unknown;
+          
+            constructor(message: string, status: number, payload: unknown) {
+              super(message);
+              this.status = status;
+              this.payload = payload;
+            }
+          }
+          
+          type ApiFetchOptions = {
+            method?: &quot;GET&quot; | &quot;POST&quot; | &quot;PATCH&quot; | &quot;DELETE&quot;;
+            token?: string | null;
+            body?: Record&lt;string, unknown&gt;;
+            query?: Record&lt;string, string | number | boolean | undefined | null&gt;;
+          };
+          
+          const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? &quot;&quot;;
+          
+          function buildUrl(path: string, query?: ApiFetchOptions[&quot;query&quot;]) {
+            if (!API_BASE_URL) {
+              throw new Error(
+                &quot;NEXT_PUBLIC_API_BASE_URL is not configured. Add it to your environment.&quot;,
+              );
+            }
+          
+            const baseUrl = new URL(API_BASE_URL);
+            const basePath = baseUrl.pathname.replace(/\/$/, &quot;&quot;);
+            const nextPath = path.startsWith(&quot;/&quot;) ? path : `/${path}`;
+            baseUrl.pathname = `${basePath}${nextPath}`;
+            const url = baseUrl;
+            if (query) {
+              Object.entries(query).forEach(([key, value]) =&gt; {
+                if (value === undefined || value === null || value === &quot;&quot;) {
+                  return;
+                }
+                url.searchParams.set(key, String(value));
+              });
+            }
+            return url.toString();
+          }
+          
+          function getErrorMessage(payload: unknown) {
+            if (!payload) {
+              return &quot;Request failed.&quot;;
+            }
+            if (typeof payload === &quot;string&quot;) {
+              return payload;
+            }
+            if (typeof payload === &quot;object&quot; &amp;&amp; payload &amp;&amp; &quot;message&quot; in payload) {
+              const message = (payload as { message?: string }).message;
+              if (message) {
+                return message;
+              }
+            }
+            return &quot;Request failed.&quot;;
+          }
+          
+          export async function apiFetch&lt;T&gt;(
+            path: string,
+            { method = &quot;GET&quot;, token, body, query }: ApiFetchOptions = {},
+          ): Promise&lt;T&gt; {
+            const headers: Record&lt;string, string&gt; = {
+              Accept: &quot;application/json&quot;,
+            };
+          
+            if (token) {
+              headers.Authorization = `Bearer ${token}`;
+            }
+          
+            let payload: BodyInit | undefined;
+            if (body) {
+              headers[&quot;Content-Type&quot;] = &quot;application/json&quot;;
+              payload = JSON.stringify(body);
+            }
+          
+            const response = await fetch(buildUrl(path, query), {
+              method,
+              headers,
+              body: payload,
+            });
+          
+            const contentType = response.headers.get(&quot;content-type&quot;) || &quot;&quot;;
+            const isJson = contentType.includes(&quot;application/json&quot;);
+            const data = isJson ? await response.json() : await response.text();
+          
+            if (!response.ok) {
+              throw new ApiError(getErrorMessage(data), response.status, data);
+            }
+          
+            return data as T;
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 3: Set frontend environment values</h3>
+          <p>The student aligns the API base URL and public Supabase keys.</p>
+          <pre><code class="language-text" data-trim>
+          # UPDATE file: frontend/.env
+          # Update these with your Supabase details from your project settings &gt; API
+          # https://app.supabase.com/project/_/settings/api
+          NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH
+          NEXT_PUBLIC_API_BASE_URL=http://localhost:3000/api
+                    </code></pre>
+          <pre><code class="language-text" data-trim>
+          # UPDATE file: frontend/.env.example
+          # Update these with your Supabase details from your project settings &gt; API
+          # https://app.supabase.com/project/_/settings/api
+          NEXT_PUBLIC_SUPABASE_URL=
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+          NEXT_PUBLIC_API_BASE_URL=http://localhost:3000/api
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 4: Add API error and response helpers</h3>
+          <p>The student standardizes error handling and JSON responses.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/errors.ts
+          export class HttpError extends Error {
+            status: number;
+            payload?: unknown;
+          
+            constructor(status: number, message: string, payload?: unknown) {
+              super(message);
+              this.status = status;
+              this.payload = payload;
+            }
+          }
+          
+          export function ensureEnv(value: string | undefined, name: string): string {
+            if (!value) {
+              throw new HttpError(500, `${name} is required`);
+            }
+            return value;
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/response.ts
+          import { NextResponse } from &quot;next/server&quot;;
+          import { HttpError } from &quot;./errors&quot;;
+          
+          export function jsonOk(data: unknown, status = 200) {
+            return NextResponse.json(data, { status });
+          }
+          
+          export function jsonError(err: unknown) {
+            if (err instanceof HttpError) {
+              return NextResponse.json({ message: err.message }, { status: err.status });
+            }
+            console.error(&quot;[api] Unhandled error:&quot;, err);
+            return NextResponse.json(
+              { message: &quot;Internal server error&quot; },
+              { status: 500 },
+            );
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 5: Add validation and PostgREST helpers</h3>
+          <p>The student adds request validation and database error helpers.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/validation.ts
+          import { HttpError } from &quot;./errors&quot;;
+          
+          const UUID_REGEX =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+          
+          export function requireUuid(value: unknown, field: string): string {
+            if (typeof value !== &quot;string&quot; || !UUID_REGEX.test(value)) {
+              throw new HttpError(400, `${field} must be a valid UUID`);
+            }
+            return value;
+          }
+          
+          export function requireString(value: unknown, field: string): string {
+            if (typeof value !== &quot;string&quot; || value.trim().length === 0) {
+              throw new HttpError(400, `${field} is required`);
+            }
+            return value;
+          }
+          
+          export function optionalString(
+            value: unknown,
+            field: string,
+          ): string | undefined {
+            if (value === undefined || value === null) {
+              return undefined;
+            }
+            if (typeof value !== &quot;string&quot;) {
+              throw new HttpError(400, `${field} must be a string`);
+            }
+            return value;
+          }
+          
+          export function requireNumber(value: unknown, field: string): number {
+            if (typeof value !== &quot;number&quot; || Number.isNaN(value)) {
+              throw new HttpError(400, `${field} must be a number`);
+            }
+            return value;
+          }
+          
+          export function optionalNumber(
+            value: unknown,
+            field: string,
+          ): number | undefined {
+            if (value === undefined || value === null) {
+              return undefined;
+            }
+            if (typeof value !== &quot;number&quot; || Number.isNaN(value)) {
+              throw new HttpError(400, `${field} must be a number`);
+            }
+            return value;
+          }
+          
+          export function requireDateString(value: unknown, field: string): string {
+            if (typeof value !== &quot;string&quot; || Number.isNaN(Date.parse(value))) {
+              throw new HttpError(400, `${field} must be a valid date string`);
+            }
+            return value;
+          }
+          
+          export function optionalDateString(
+            value: unknown,
+            field: string,
+          ): string | undefined {
+            if (value === undefined || value === null) {
+              return undefined;
+            }
+            if (typeof value !== &quot;string&quot; || Number.isNaN(Date.parse(value))) {
+              throw new HttpError(400, `${field} must be a valid date string`);
+            }
+            return value;
+          }
+          
+          export function requireEnum&lt;T extends string&gt;(
+            value: unknown,
+            allowed: readonly T[],
+            field: string,
+          ): T {
+            if (typeof value !== &quot;string&quot; || !allowed.includes(value as T)) {
+              throw new HttpError(400, `${field} must be one of ${allowed.join(&quot;, &quot;)}`);
+            }
+            return value as T;
+          }
+          
+          export function optionalEnum&lt;T extends string&gt;(
+            value: unknown,
+            allowed: readonly T[],
+            field: string,
+          ): T | undefined {
+            if (value === undefined || value === null) {
+              return undefined;
+            }
+            return requireEnum(value, allowed, field);
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/supabase-helpers.ts
+          import type { PostgrestError } from &quot;@supabase/supabase-js&quot;;
+          import { HttpError } from &quot;./errors&quot;;
+          
+          const NOT_FOUND_CODE = &quot;PGRST116&quot;;
+          
+          export function throwIfPostgrestError(error?: PostgrestError | null): void {
+            if (!error) {
+              return;
+            }
+            if (error.code === NOT_FOUND_CODE) {
+              throw new HttpError(404, &quot;Resource not found&quot;);
+            }
+            throw new HttpError(400, error.message);
+          }
+          
+          export function throwIfStorageError(error?: { message?: string } | null): void {
+            if (!error) {
+              return;
+            }
+            throw new HttpError(400, error.message ?? &quot;Storage operation failed&quot;);
+          }
+          
+          export function assertFound&lt;T&gt;(data: T | null | undefined): T {
+            if (!data) {
+              throw new HttpError(404, &quot;Resource not found&quot;);
+            }
+            return data;
+          }
+          
+          export function assertArrayNotEmpty&lt;T&gt;(data: T[] | null | undefined): T[] {
+            if (!data || data.length === 0) {
+              throw new HttpError(404, &quot;Resource not found&quot;);
+            }
+            return data;
+          }
+          
+          export function assertInserted&lt;T&gt;(data: T | null | undefined): T {
+            if (!data) {
+              throw new HttpError(500, &quot;Insert failed&quot;);
+            }
+            return data;
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 6: Add shared enums and role checks</h3>
+          <p>The student centralizes role and status enums and adds role validation.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/enums.ts
+          export const ROLES = [&quot;admin&quot;, &quot;manager&quot;, &quot;member&quot;] as const;
+          export type Role = (typeof ROLES)[number];
+          
+          export const PROJECT_STATUSES = [
+            &quot;planned&quot;,
+            &quot;active&quot;,
+            &quot;completed&quot;,
+            &quot;cancelled&quot;,
+          ] as const;
+          export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+          
+          export const TASK_STATUSES = [&quot;todo&quot;, &quot;in_progress&quot;, &quot;blocked&quot;, &quot;done&quot;] as const;
+          export type TaskStatus = (typeof TASK_STATUSES)[number];
+          
+          export const TASK_APPROVAL_STATUSES = [&quot;draft&quot;, &quot;pending&quot;, &quot;approved&quot;] as const;
+          export type TaskApprovalStatus = (typeof TASK_APPROVAL_STATUSES)[number];
+          
+          export const WORK_LOG_STATUSES = [
+            &quot;pending&quot;,
+            &quot;approved&quot;,
+            &quot;rejected&quot;,
+          ] as const;
+          export type WorkLogStatus = (typeof WORK_LOG_STATUSES)[number];
+          
+          export const APPROVAL_STATUSES = [&quot;approved&quot;, &quot;rejected&quot;] as const;
+          export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+          
+          export const ROLE_RANK: Record&lt;Role, number&gt; = {
+            admin: 3,
+            manager: 2,
+            member: 1,
+          };
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/roles.ts
+          import type { SupabaseClient } from &quot;@supabase/supabase-js&quot;;
+          import { HttpError } from &quot;./errors&quot;;
+          import { ROLE_RANK, type Role } from &quot;./enums&quot;;
+          import { throwIfPostgrestError } from &quot;./supabase-helpers&quot;;
+          
+          export async function requireRole(
+            supabase: SupabaseClient,
+            userId: string,
+            requiredRoles: Role[],
+          ) {
+            if (requiredRoles.length === 0) {
+              return;
+            }
+          
+            const { data, error } = await supabase
+              .from(&quot;profiles&quot;)
+              .select(&quot;role&quot;)
+              .eq(&quot;id&quot;, userId)
+              .maybeSingle();
+            throwIfPostgrestError(error);
+          
+            const role = data?.role as Role | undefined;
+            if (!role) {
+              throw new HttpError(403, &quot;Role not found&quot;);
+            }
+          
+            const hasAccess = requiredRoles.some(
+              (required) =&gt; ROLE_RANK[role] &gt;= ROLE_RANK[required],
+            );
+            if (!hasAccess) {
+              throw new HttpError(403, &quot;Insufficient role&quot;);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 7: Add auth and request helpers</h3>
+          <p>The student adds bearer token auth parsing and JSON request parsing.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/auth.ts
+          import type { SupabaseClient, User } from &quot;@supabase/supabase-js&quot;;
+          import { createClient } from &quot;@supabase/supabase-js&quot;;
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { ensureEnv, HttpError } from &quot;./errors&quot;;
+          
+          export type AuthUser = {
+            id: string;
+            email?: string | null;
+          };
+          
+          export type AuthContext = {
+            user: AuthUser;
+            token: string;
+            supabase: SupabaseClient;
+          };
+          
+          const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+          const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+          const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+          
+          function createAnonClient() {
+            const url = ensureEnv(SUPABASE_URL, &quot;NEXT_PUBLIC_SUPABASE_URL&quot;);
+            const anonKey = ensureEnv(
+              SUPABASE_ANON_KEY,
+              &quot;NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY&quot;,
+            );
+            return createClient(url, anonKey, {
+              auth: { autoRefreshToken: false, persistSession: false },
+            });
+          }
+          
+          export function createUserClient(token: string) {
+            const url = ensureEnv(SUPABASE_URL, &quot;NEXT_PUBLIC_SUPABASE_URL&quot;);
+            const anonKey = ensureEnv(
+              SUPABASE_ANON_KEY,
+              &quot;NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY&quot;,
+            );
+            return createClient(url, anonKey, {
+              auth: { autoRefreshToken: false, persistSession: false },
+              global: {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              },
+            });
+          }
+          
+          export function getAdminClient(): SupabaseClient {
+            const url = ensureEnv(SUPABASE_URL, &quot;NEXT_PUBLIC_SUPABASE_URL&quot;);
+            const serviceKey = ensureEnv(
+              SUPABASE_SERVICE_ROLE_KEY,
+              &quot;SUPABASE_SERVICE_ROLE_KEY&quot;,
+            );
+            return createClient(url, serviceKey, {
+              auth: { autoRefreshToken: false, persistSession: false },
+            });
+          }
+          
+          async function getUserFromToken(token: string): Promise&lt;User&gt; {
+            const anonClient = createAnonClient();
+            const { data, error } = await anonClient.auth.getUser(token);
+            if (error || !data?.user) {
+              throw new HttpError(401, &quot;Invalid token&quot;);
+            }
+            return data.user;
+          }
+          
+          function getBearerToken(request: NextRequest): string {
+            const header = request.headers.get(&quot;authorization&quot;);
+            if (!header) {
+              throw new HttpError(401, &quot;Missing bearer token&quot;);
+            }
+            const [scheme, token] = header.split(&quot; &quot;);
+            if (scheme !== &quot;Bearer&quot; || !token) {
+              throw new HttpError(401, &quot;Missing bearer token&quot;);
+            }
+            return token;
+          }
+          
+          export async function requireAuth(request: NextRequest): Promise&lt;AuthContext&gt; {
+            const token = getBearerToken(request);
+            const user = await getUserFromToken(token);
+            return {
+              token,
+              user: { id: user.id, email: user.email },
+              supabase: createUserClient(token),
+            };
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/request.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { HttpError } from &quot;./errors&quot;;
+          
+          export async function readJson&lt;T&gt;(request: NextRequest): Promise&lt;T&gt; {
+            try {
+              return (await request.json()) as T;
+            } catch {
+              throw new HttpError(400, &quot;Invalid JSON body&quot;);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 8: Add report and Edge invocation helpers</h3>
+          <p>The student adds report summarization and Edge function invocations.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/reports.ts
+          export function summarizeWorkLogs(
+            workLogs: Array&lt;{ hours?: number; qty_done?: number; status?: string }&gt;,
+          ) {
+            const summary = {
+              total_hours: 0,
+              total_qty: 0,
+              pending: 0,
+              approved: 0,
+              rejected: 0,
+            };
+          
+            for (const log of workLogs) {
+              summary.total_hours += Number(log.hours ?? 0);
+              summary.total_qty += Number(log.qty_done ?? 0);
+              if (log.status === &quot;pending&quot;) summary.pending += 1;
+              if (log.status === &quot;approved&quot;) summary.approved += 1;
+              if (log.status === &quot;rejected&quot;) summary.rejected += 1;
+            }
+          
+            return summary;
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/lib/api/edge.ts
+          import type { SupabaseClient } from &quot;@supabase/supabase-js&quot;;
+          import { HttpError } from &quot;./errors&quot;;
+          
+          export async function invokeEdgeFunction&lt;T&gt;(
+            supabase: SupabaseClient,
+            name: string,
+            body?: Record&lt;string, unknown&gt;,
+            options?: { method?: string },
+          ): Promise&lt;T&gt; {
+            const { data, error } = await supabase.functions.invoke(name, {
+              body,
+              method: options?.method,
+            });
+          
+            if (error) {
+              const context = (error as { context?: Response }).context;
+              let message = error.message;
+              let status = 500;
+              if (context) {
+                status = context.status;
+                try {
+                  const payload = await context.clone().json();
+                  if (payload &amp;&amp; typeof payload === &quot;object&quot; &amp;&amp; &quot;message&quot; in payload) {
+                    const ctxMessage = (payload as { message?: string }).message;
+                    if (ctxMessage) {
+                      message = ctxMessage;
+                    }
+                  }
+                } catch {
+                  // ignore parse failures
+                }
+              }
+              throw new HttpError(status, message);
+            }
+          
+            return data as T;
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 9: Add Edge shared helpers</h3>
+          <p>The student creates shared helpers for Edge Functions.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/_shared/http.ts
+          export const corsHeaders: Record&lt;string, string&gt; = {
+            &quot;Access-Control-Allow-Origin&quot;: &quot;*&quot;,
+            &quot;Access-Control-Allow-Headers&quot;:
+              &quot;authorization, x-client-info, apikey, content-type&quot;,
+            &quot;Access-Control-Allow-Methods&quot;: &quot;GET,POST,PATCH,OPTIONS&quot;,
+          };
+          
+          export class HttpError extends Error {
+            status: number;
+          
+            constructor(status: number, message: string) {
+              super(message);
+              this.status = status;
+            }
+          }
+          
+          export function jsonResponse(data: unknown, status = 200) {
+            return new Response(JSON.stringify(data), {
+              status,
+              headers: {
+                ...corsHeaders,
+                &quot;Content-Type&quot;: &quot;application/json&quot;,
+              },
+            });
+          }
+          
+          export function errorResponse(err: unknown) {
+            if (err instanceof HttpError) {
+              return jsonResponse({ message: err.message }, err.status);
+            }
+            console.error(&quot;[edge] Unhandled error:&quot;, err);
+            return jsonResponse({ message: &quot;Internal server error&quot; }, 500);
+          }
+          
+          export async function readJson&lt;T&gt;(request: Request): Promise&lt;T&gt; {
+            try {
+              return (await request.json()) as T;
+            } catch {
+              throw new HttpError(400, &quot;Invalid JSON body&quot;);
+            }
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/_shared/validation.ts
+          import { HttpError } from &quot;./http.ts&quot;;
+          
+          export function requireString(value: unknown, field: string): string {
+            if (typeof value !== &quot;string&quot; || value.trim().length === 0) {
+              throw new HttpError(400, `${field} is required`);
+            }
+            return value;
+          }
+          
+          export function optionalString(
+            value: unknown,
+            field: string,
+          ): string | undefined {
+            if (value === undefined || value === null) {
+              return undefined;
+            }
+            if (typeof value !== &quot;string&quot;) {
+              throw new HttpError(400, `${field} must be a string`);
+            }
+            return value;
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/_shared/supabase.ts
+          import { createClient } from &quot;https://esm.sh/@supabase/supabase-js@2&quot;;
+          import { HttpError } from &quot;./http.ts&quot;;
+          
+          const SUPABASE_URL = Deno.env.get(&quot;SUPABASE_URL&quot;) ?? &quot;&quot;;
+          const SUPABASE_ANON_KEY = Deno.env.get(&quot;SUPABASE_ANON_KEY&quot;) ?? &quot;&quot;;
+          const SERVICE_ROLE_KEY =
+            Deno.env.get(&quot;SERVICE_ROLE_KEY&quot;) ??
+            Deno.env.get(&quot;SUPABASE_SERVICE_ROLE_KEY&quot;) ??
+            &quot;&quot;;
+          
+          function requireEnv(value: string, name: string) {
+            if (!value) {
+              throw new HttpError(500, `${name} is required`);
+            }
+            return value;
+          }
+          
+          export function createUserClient(token: string) {
+            const url = requireEnv(SUPABASE_URL, &quot;SUPABASE_URL&quot;);
+            const anonKey = requireEnv(SUPABASE_ANON_KEY, &quot;SUPABASE_ANON_KEY&quot;);
+            return createClient(url, anonKey, {
+              auth: { autoRefreshToken: false, persistSession: false },
+              global: {
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                },
+              },
+            });
+          }
+          
+          export function createAdminClient() {
+            const url = requireEnv(SUPABASE_URL, &quot;SUPABASE_URL&quot;);
+            const serviceKey = requireEnv(
+              SERVICE_ROLE_KEY,
+              &quot;SERVICE_ROLE_KEY (or SUPABASE_SERVICE_ROLE_KEY)&quot;,
+            );
+            return createClient(url, serviceKey, {
+              auth: { autoRefreshToken: false, persistSession: false },
+            });
+          }
+          
+          function decodeBase64Url(value: string) {
+            const base64 = value.replace(/-/g, &quot;+&quot;).replace(/_/g, &quot;/&quot;);
+            const padded = base64 + &quot;=&quot;.repeat((4 - (base64.length % 4)) % 4);
+            return atob(padded);
+          }
+          
+          function parseJwt(token: string) {
+            const parts = token.split(&quot;.&quot;);
+            if (parts.length &lt; 2) {
+              throw new HttpError(401, &quot;Invalid token&quot;);
+            }
+            try {
+              const payload = JSON.parse(decodeBase64Url(parts[1]));
+              return {
+                id: typeof payload.sub === &quot;string&quot; ? payload.sub : &quot;&quot;,
+                email: typeof payload.email === &quot;string&quot; ? payload.email : null,
+              };
+            } catch {
+              throw new HttpError(401, &quot;Invalid token&quot;);
+            }
+          }
+          
+          export function requireAuth(request: Request) {
+            const header = request.headers.get(&quot;authorization&quot;) ?? &quot;&quot;;
+            const [scheme, token] = header.split(&quot; &quot;);
+            if (scheme !== &quot;Bearer&quot; || !token) {
+              throw new HttpError(401, &quot;Missing bearer token&quot;);
+            }
+            const user = parseJwt(token);
+            if (!user.id) {
+              throw new HttpError(401, &quot;Invalid token&quot;);
+            }
+            return {
+              user,
+              token,
+              supabase: createUserClient(token),
+            };
+          }
+          
+          type PostgrestError = { message?: string; code?: string } | null;
+          
+          const NOT_FOUND_CODE = &quot;PGRST116&quot;;
+          
+          export function throwIfPostgrestError(error: PostgrestError) {
+            if (!error) {
+              return;
+            }
+            if (error.code === NOT_FOUND_CODE) {
+              throw new HttpError(404, &quot;Resource not found&quot;);
+            }
+            throw new HttpError(400, error.message ?? &quot;Database error&quot;);
+          }
+          
+          export function throwIfStorageError(error?: { message?: string } | null) {
+            if (!error) {
+              return;
+            }
+            throw new HttpError(400, error.message ?? &quot;Storage operation failed&quot;);
+          }
+          
+          export function assertFound&lt;T&gt;(data: T | null | undefined): T {
+            if (!data) {
+              throw new HttpError(404, &quot;Resource not found&quot;);
+            }
+            return data;
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 10: Add Edge Function for invites</h3>
+          <p>The student implements the invite flow in Edge.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/auth-invite/index.ts
+          import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+          import { corsHeaders, errorResponse, jsonResponse, readJson } from &quot;../_shared/http.ts&quot;;
+          import { createAdminClient, requireAuth, throwIfPostgrestError } from &quot;../_shared/supabase.ts&quot;;
+          import { requireString } from &quot;../_shared/validation.ts&quot;;
+          
+          type InvitePayload = { email?: string };
+          
+          serve(async (req) =&gt; {
+            if (req.method === &quot;OPTIONS&quot;) {
+              return new Response(&quot;ok&quot;, { headers: corsHeaders });
+            }
+          
+            try {
+              const { user } = requireAuth(req);
+              const body = await readJson&lt;InvitePayload&gt;(req);
+              const email = requireString(body?.email, &quot;email&quot;);
+          
+              const admin = createAdminClient();
+              const { data: profile, error: profileError } = await admin
+                .from(&quot;profiles&quot;)
+                .select(&quot;company_id, role&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+          
+              if (!profile?.company_id) {
+                return jsonResponse({ message: &quot;Admin user is not assigned to a company&quot; }, 400);
+              }
+              if (profile.role !== &quot;admin&quot;) {
+                return jsonResponse({ message: &quot;Insufficient role&quot; }, 403);
+              }
+          
+              const frontendUrl = Deno.env.get(&quot;FRONTEND_URL&quot;)?.replace(/\/$/, &quot;&quot;);
+              const redirectTo = frontendUrl ? `${frontendUrl}/auth/invite` : undefined;
+          
+              const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+                redirectTo,
+                data: { company_id: profile.company_id, role: &quot;member&quot; },
+              });
+          
+              if (error) {
+                return jsonResponse({ message: error.message }, 400);
+              }
+          
+              const invitedUserId =
+                data?.user?.id ?? (data as { id?: string } | null)?.id;
+              if (invitedUserId) {
+                const { error: upsertError } = await admin
+                  .from(&quot;profiles&quot;)
+                  .upsert(
+                    { id: invitedUserId, company_id: profile.company_id, role: &quot;member&quot; },
+                    { onConflict: &quot;id&quot; },
+                  );
+                throwIfPostgrestError(upsertError);
+              }
+          
+              return jsonResponse(data ?? { ok: true });
+            } catch (err) {
+              return errorResponse(err);
+            }
+          });
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 11: Add Edge Function for attachment upload URLs</h3>
+          <p>The student implements signed upload URL generation in Edge.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/attachments-upload-url/index.ts
+          import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+          import { corsHeaders, errorResponse, jsonResponse, readJson, HttpError } from &quot;../_shared/http.ts&quot;;
+          import { createAdminClient, requireAuth, throwIfStorageError } from &quot;../_shared/supabase.ts&quot;;
+          import { requireString } from &quot;../_shared/validation.ts&quot;;
+          
+          type UploadPayload = { filename?: string; task_id?: string };
+          
+          let bucketReady = false;
+          
+          async function ensureBucket(bucket: string) {
+            if (bucketReady) {
+              return;
+            }
+            const admin = createAdminClient();
+            const { error } = await admin.storage.createBucket(bucket, { public: false });
+            if (error &amp;&amp; !String(error.message).toLowerCase().includes(&quot;exists&quot;)) {
+              throw new HttpError(
+                500,
+                error.message ?? &quot;Failed to ensure storage bucket&quot;,
+              );
+            }
+            bucketReady = true;
+          }
+          
+          serve(async (req) =&gt; {
+            if (req.method === &quot;OPTIONS&quot;) {
+              return new Response(&quot;ok&quot;, { headers: corsHeaders });
+            }
+          
+            try {
+              const { user } = requireAuth(req);
+              const body = await readJson&lt;UploadPayload&gt;(req);
+              const filename = requireString(body?.filename, &quot;filename&quot;);
+              const taskId = requireString(body?.task_id, &quot;task_id&quot;);
+          
+              const bucket = Deno.env.get(&quot;SUPABASE_ATTACHMENTS_BUCKET&quot;);
+              if (!bucket) {
+                throw new HttpError(500, &quot;SUPABASE_ATTACHMENTS_BUCKET is required&quot;);
+              }
+          
+              const safeName = filename.replace(/[\\/]/g, &quot;_&quot;);
+              const path = `${user.id}/${taskId}/${crypto.randomUUID()}-${safeName}`;
+          
+              await ensureBucket(bucket);
+              const admin = createAdminClient();
+              const { data, error } = await admin.storage
+                .from(bucket)
+                .createSignedUploadUrl(path);
+              throwIfStorageError(error);
+          
+              return jsonResponse({
+                url: data?.signedUrl,
+                path: data?.path ?? path,
+              });
+            } catch (err) {
+              return errorResponse(err);
+            }
+          });
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 12: Add Edge Function for company creation</h3>
+          <p>The student implements privileged company creation in Edge.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/companies-create/index.ts
+          import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+          import { corsHeaders, errorResponse, jsonResponse, readJson, HttpError } from &quot;../_shared/http.ts&quot;;
+          import { createAdminClient, requireAuth, throwIfPostgrestError } from &quot;../_shared/supabase.ts&quot;;
+          import { requireString } from &quot;../_shared/validation.ts&quot;;
+          
+          type CompanyPayload = { name?: string };
+          
+          serve(async (req) =&gt; {
+            if (req.method === &quot;OPTIONS&quot;) {
+              return new Response(&quot;ok&quot;, { headers: corsHeaders });
+            }
+          
+            try {
+              const { user } = requireAuth(req);
+              const body = await readJson&lt;CompanyPayload&gt;(req);
+              const name = requireString(body?.name, &quot;name&quot;);
+          
+              const admin = createAdminClient();
+              const { data: profile, error: profileError } = await admin
+                .from(&quot;profiles&quot;)
+                .select(&quot;company_id, role&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+          
+              if (!profile) {
+                throw new HttpError(400, &quot;Profile not found&quot;);
+              }
+              if (profile.role !== &quot;admin&quot;) {
+                throw new HttpError(403, &quot;Insufficient role&quot;);
+              }
+              if (profile.company_id) {
+                throw new HttpError(400, &quot;User already belongs to a company&quot;);
+              }
+          
+              const { data, error } = await admin
+                .from(&quot;companies&quot;)
+                .insert({ name })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+          
+              const { error: updateError } = await admin
+                .from(&quot;profiles&quot;)
+                .update({ company_id: data.id })
+                .eq(&quot;id&quot;, user.id);
+              throwIfPostgrestError(updateError);
+          
+              return jsonResponse(data);
+            } catch (err) {
+              return errorResponse(err);
+            }
+          });
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 13: Add Edge Function for profile read/update</h3>
+          <p>The student implements profile GET/PATCH with admin fallback in Edge.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: supabase/functions/profiles-me/index.ts
+          import { serve } from &quot;https://deno.land/std@0.224.0/http/server.ts&quot;;
+          import { corsHeaders, errorResponse, jsonResponse, readJson, HttpError } from &quot;../_shared/http.ts&quot;;
+          import {
+            assertFound,
+            createAdminClient,
+            requireAuth,
+            throwIfPostgrestError,
+          } from &quot;../_shared/supabase.ts&quot;;
+          import { optionalString } from &quot;../_shared/validation.ts&quot;;
+          
+          type ProfilePayload = {
+            action?: string;
+            full_name?: string;
+            phone?: string;
+          };
+          
+          serve(async (req) =&gt; {
+            if (req.method === &quot;OPTIONS&quot;) {
+              return new Response(&quot;ok&quot;, { headers: corsHeaders });
+            }
+          
+            try {
+              const { user, supabase } = requireAuth(req);
+              const body = await readJson&lt;ProfilePayload&gt;(req);
+          
+              if (body?.action === &quot;get&quot;) {
+                const { data, error } = await supabase
+                  .from(&quot;profiles&quot;)
+                  .select(&quot;*&quot;)
+                  .eq(&quot;id&quot;, user.id)
+                  .maybeSingle();
+                throwIfPostgrestError(error);
+                if (data) {
+                  return jsonResponse(assertFound(data));
+                }
+          
+                const admin = createAdminClient();
+                const { data: adminData, error: adminError } = await admin
+                  .from(&quot;profiles&quot;)
+                  .select(&quot;*&quot;)
+                  .eq(&quot;id&quot;, user.id)
+                  .maybeSingle();
+                throwIfPostgrestError(adminError);
+                return jsonResponse(assertFound(adminData));
+              }
+          
+              const fullName = optionalString(body?.full_name, &quot;full_name&quot;);
+              const phone = optionalString(body?.phone, &quot;phone&quot;);
+              const updates: Record&lt;string, string&gt; = {};
+              if (fullName !== undefined) updates.full_name = fullName;
+              if (phone !== undefined) updates.phone = phone;
+          
+              if (Object.keys(updates).length === 0) {
+                throw new HttpError(400, &quot;No fields to update&quot;);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;profiles&quot;)
+                .update(updates)
+                .eq(&quot;id&quot;, user.id)
+                .select(&quot;*&quot;)
+                .maybeSingle();
+              if (error) {
+                throwIfPostgrestError(error);
+              }
+              if (data) {
+                return jsonResponse(data);
+              }
+          
+              const admin = createAdminClient();
+              const { data: adminData, error: adminError } = await admin
+                .from(&quot;profiles&quot;)
+                .upsert([{ id: user.id, ...updates }], { onConflict: &quot;id&quot; })
+                .select(&quot;*&quot;)
+                .maybeSingle();
+              throwIfPostgrestError(adminError);
+              return jsonResponse(assertFound(adminData));
+            } catch (err) {
+              return errorResponse(err);
+            }
+          });
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 14: Add Edge function environment file</h3>
+          <p>The student sets local Edge environment variables.</p>
+          <pre><code class="language-text" data-trim>
+          # ADD file: supabase/functions/.env
+          SUPABASE_URL=http://127.0.0.1:54321
+          SUPABASE_ANON_KEY=sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH
+          SERVICE_ROLE_KEY=sb_secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz
+          FRONTEND_URL=http://127.0.0.1:3000
+          SUPABASE_ATTACHMENTS_BUCKET=attachments
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 15: Align Supabase auth redirects</h3>
+          <p>The student updates Supabase auth URLs to point to the Next.js app.</p>
+          <pre><code class="language-ini" data-trim>
+          # UPDATE file: supabase/config.toml
+          [auth]
+          site_url = &quot;http://127.0.0.1:3000&quot;
+          additional_redirect_urls = [
+            &quot;http://127.0.0.1:3000/auth/confirm&quot;,
+            &quot;http://127.0.0.1:3000/auth/invite&quot;,
+            &quot;http://127.0.0.1:3000/auth/update-password&quot;,
+            &quot;http://127.0.0.1:3000/dashboard&quot;,
+          ]
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 16: Add auth session and logout routes</h3>
+          <p>The student mirrors session and logout endpoints in Next.js.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/auth/session/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { user } = await requireAuth(request);
+              return jsonOk({ user });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/auth/logout/route.ts
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST() {
+            try {
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 17: Add auth invite route (Edge)</h3>
+          <p>The student connects the invite endpoint to the Edge Function.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/auth/invite/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { invokeEdgeFunction } from &quot;@/lib/api/edge&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireString } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const body = await readJson&lt;{ email?: string }&gt;(request);
+              const email = requireString(body?.email, &quot;email&quot;);
+              const data = await invokeEdgeFunction&lt;Record&lt;string, unknown&gt;&gt;(
+                supabase,
+                &quot;auth-invite&quot;,
+                { email },
+              );
+              return jsonOk(data ?? { ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 18: Add company lookup route</h3>
+          <p>The student adds /companies/me in Next.js.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/companies/me/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              const { data: profile, error: profileError } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;company_id&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+          
+              if (!profile?.company_id) {
+                return jsonOk(null);
+              }
+          
+              const { data: company, error: companyError } = await supabase
+                .from(&quot;companies&quot;)
+                .select(&quot;id, name&quot;)
+                .eq(&quot;id&quot;, profile.company_id)
+                .maybeSingle();
+              throwIfPostgrestError(companyError);
+              return jsonOk(company);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 19: Add company creation route (Edge)</h3>
+          <p>The student connects company creation to the Edge Function.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/companies/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { invokeEdgeFunction } from &quot;@/lib/api/edge&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireString } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const body = await readJson&lt;{ name?: string }&gt;(request);
+              const name = requireString(body?.name, &quot;name&quot;);
+              const data = await invokeEdgeFunction&lt;Record&lt;string, unknown&gt;&gt;(
+                supabase,
+                &quot;companies-create&quot;,
+                { name },
+              );
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 20: Add company rename route</h3>
+          <p>The student adds PATCH /companies/:id.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/companies/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireString, requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function PATCH(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;admin&quot;]);
+          
+              const companyId = requireUuid(params.id, &quot;id&quot;);
+              const body = await readJson&lt;{ name?: string }&gt;(request);
+              const name = requireString(body?.name, &quot;name&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;companies&quot;)
+                .update({ name })
+                .eq(&quot;id&quot;, companyId)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 21: Add profile self-service route (Edge)</h3>
+          <p>The student connects profile GET/PATCH to the Edge Function.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/profiles/me/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { invokeEdgeFunction } from &quot;@/lib/api/edge&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { optionalString } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const data = await invokeEdgeFunction&lt;Record&lt;string, unknown&gt;&gt;(
+                supabase,
+                &quot;profiles-me&quot;,
+                { action: &quot;get&quot; },
+              );
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function PATCH(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const body = await readJson&lt;{ full_name?: string; phone?: string }&gt;(request);
+          
+              const fullName = optionalString(body?.full_name, &quot;full_name&quot;);
+              const phone = optionalString(body?.phone, &quot;phone&quot;);
+          
+              const data = await invokeEdgeFunction&lt;Record&lt;string, unknown&gt;&gt;(
+                supabase,
+                &quot;profiles-me&quot;,
+                {
+                  full_name: fullName,
+                  phone,
+                },
+              );
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 22: Add profile list by company</h3>
+          <p>The student adds /profiles/company.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/profiles/company/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const { data: profile, error: profileError } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;company_id&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+          
+              const companyId = profile?.company_id;
+              if (!companyId) {
+                return jsonOk([]);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;company_id&quot;, companyId);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 23: Add projects list/create</h3>
+          <p>The student rebuilds /projects with list and create.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { HttpError } from &quot;@/lib/api/errors&quot;;
+          import { PROJECT_STATUSES } from &quot;@/lib/api/enums&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalDateString,
+            requireEnum,
+            requireString,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const { data, error } = await supabase.from(&quot;projects&quot;).select(&quot;*&quot;);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function POST(request: NextRequest) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const body = await readJson&lt;{
+                name?: string;
+                start_date?: string;
+                end_date?: string;
+                status?: string;
+              }&gt;(request);
+          
+              const name = requireString(body?.name, &quot;name&quot;);
+              const startDate = optionalDateString(body?.start_date, &quot;start_date&quot;);
+              const endDate = optionalDateString(body?.end_date, &quot;end_date&quot;);
+              const status = requireEnum(body?.status, PROJECT_STATUSES, &quot;status&quot;);
+          
+              const { data: profile, error: profileError } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;company_id&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+          
+              const companyId = profile?.company_id;
+              if (!companyId) {
+                throw new HttpError(400, &quot;User is not assigned to a company&quot;);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;projects&quot;)
+                .insert({
+                  company_id: companyId,
+                  name,
+                  start_date: startDate ?? null,
+                  end_date: endDate ?? null,
+                  status,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 24: Add project read/update/delete</h3>
+          <p>The student adds /projects/:id handlers.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { HttpError } from &quot;@/lib/api/errors&quot;;
+          import { PROJECT_STATUSES } from &quot;@/lib/api/enums&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import {
+            assertArrayNotEmpty,
+            assertFound,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalDateString,
+            optionalEnum,
+            optionalString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const projectId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;projects&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;id&quot;, projectId)
+                .maybeSingle();
+              throwIfPostgrestError(error);
+              return jsonOk(assertFound(data));
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function PATCH(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const projectId = requireUuid(params.id, &quot;id&quot;);
+              const body = await readJson&lt;{
+                name?: string;
+                start_date?: string;
+                end_date?: string;
+                status?: string;
+              }&gt;(request);
+          
+              const name = optionalString(body?.name, &quot;name&quot;);
+              const startDate = optionalDateString(body?.start_date, &quot;start_date&quot;);
+              const endDate = optionalDateString(body?.end_date, &quot;end_date&quot;);
+              const status = optionalEnum(body?.status, PROJECT_STATUSES, &quot;status&quot;);
+          
+              const updates: Record&lt;string, string&gt; = {};
+              if (name !== undefined) updates.name = name;
+              if (startDate !== undefined) updates.start_date = startDate;
+              if (endDate !== undefined) updates.end_date = endDate;
+              if (status !== undefined) updates.status = status;
+          
+              if (Object.keys(updates).length === 0) {
+                throw new HttpError(400, &quot;No fields to update&quot;);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;projects&quot;)
+                .update(updates)
+                .eq(&quot;id&quot;, projectId)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function DELETE(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;admin&quot;]);
+          
+              const projectId = requireUuid(params.id, &quot;id&quot;);
+              const { data, error } = await supabase
+                .from(&quot;projects&quot;)
+                .delete()
+                .eq(&quot;id&quot;, projectId)
+                .select(&quot;id&quot;);
+              throwIfPostgrestError(error);
+              assertArrayNotEmpty(data);
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 25: Add project members list/create</h3>
+          <p>The student adds /projects/:projectId/members.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/[projectId]/members/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { ROLES } from &quot;@/lib/api/enums&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireEnum, requireString, requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { projectId: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;project_members&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;project_id&quot;, projectId);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { projectId: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+              const body = await readJson&lt;{ user_id?: string; member_role?: string }&gt;(
+                request,
+              );
+              const userId = requireString(body?.user_id, &quot;user_id&quot;);
+              const memberRole = requireEnum(body?.member_role, ROLES, &quot;member_role&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;project_members&quot;)
+                .insert({
+                  project_id: projectId,
+                  user_id: userId,
+                  member_role: memberRole,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 26: Add project member update/remove</h3>
+          <p>The student adds /projects/:projectId/members/:userId.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/[projectId]/members/[userId]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { ROLES } from &quot;@/lib/api/enums&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import {
+            assertArrayNotEmpty,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireEnum, requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function PATCH(
+            request: NextRequest,
+            { params }: { params: { projectId: string; userId: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+              const userId = requireUuid(params.userId, &quot;userId&quot;);
+              const body = await readJson&lt;{ member_role?: string }&gt;(request);
+              const memberRole = requireEnum(body?.member_role, ROLES, &quot;member_role&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;project_members&quot;)
+                .update({ member_role: memberRole })
+                .eq(&quot;project_id&quot;, projectId)
+                .eq(&quot;user_id&quot;, userId)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function DELETE(
+            request: NextRequest,
+            { params }: { params: { projectId: string; userId: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+              const userId = requireUuid(params.userId, &quot;userId&quot;);
+              const { data, error } = await supabase
+                .from(&quot;project_members&quot;)
+                .delete()
+                .eq(&quot;project_id&quot;, projectId)
+                .eq(&quot;user_id&quot;, userId)
+                .select(&quot;user_id&quot;);
+              throwIfPostgrestError(error);
+              assertArrayNotEmpty(data);
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 27: Add project tasks list/create</h3>
+          <p>The student adds /projects/:projectId/tasks.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/[projectId]/tasks/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import {
+            TASK_APPROVAL_STATUSES,
+            TASK_STATUSES,
+          } from &quot;@/lib/api/enums&quot;;
+          import { HttpError } from &quot;@/lib/api/errors&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalDateString,
+            optionalEnum,
+            optionalNumber,
+            optionalString,
+            requireEnum,
+            requireString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { projectId: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;project_id&quot;, projectId);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { projectId: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;member&quot;]);
+          
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+              const body = await readJson&lt;{
+                title?: string;
+                unit?: string;
+                planned_qty?: number | null;
+                planned_hours?: number | null;
+                start_date?: string | null;
+                end_date?: string | null;
+                status?: string;
+                assigned_to?: string | null;
+                approval_status?: string;
+              }&gt;(request);
+          
+              const { data: profile, error: profileError } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;role&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+              const role = profile?.role ?? &quot;member&quot;;
+          
+              const title = requireString(body?.title, &quot;title&quot;);
+              const unit = requireString(body?.unit, &quot;unit&quot;);
+              const plannedQty = optionalNumber(body?.planned_qty, &quot;planned_qty&quot;);
+              const plannedHours = optionalNumber(body?.planned_hours, &quot;planned_hours&quot;);
+              const startDate = optionalDateString(body?.start_date, &quot;start_date&quot;);
+              const endDate = optionalDateString(body?.end_date, &quot;end_date&quot;);
+              const status = requireEnum(body?.status, TASK_STATUSES, &quot;status&quot;);
+          
+              const assignedTo =
+                role === &quot;member&quot;
+                  ? user.id
+                  : optionalString(body?.assigned_to, &quot;assigned_to&quot;);
+          
+              const approvalStatusInput = optionalEnum(
+                body?.approval_status,
+                TASK_APPROVAL_STATUSES,
+                &quot;approval_status&quot;,
+              );
+              const approvalStatus =
+                role === &quot;member&quot;
+                  ? approvalStatusInput ?? &quot;draft&quot;
+                  : approvalStatusInput ?? &quot;approved&quot;;
+          
+              if (role === &quot;member&quot; &amp;&amp; approvalStatus === &quot;approved&quot;) {
+                throw new HttpError(
+                  400,
+                  &quot;Members can only create draft or pending tasks.&quot;,
+                );
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .insert({
+                  project_id: projectId,
+                  title,
+                  unit,
+                  planned_qty: plannedQty ?? null,
+                  planned_hours: plannedHours ?? null,
+                  start_date: startDate ?? null,
+                  end_date: endDate ?? null,
+                  status,
+                  assigned_to: assignedTo ?? null,
+                  approval_status: approvalStatus,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 28: Add task read/update/delete</h3>
+          <p>The student adds /tasks/:id handlers.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/tasks/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { TASK_APPROVAL_STATUSES, TASK_STATUSES } from &quot;@/lib/api/enums&quot;;
+          import { HttpError } from &quot;@/lib/api/errors&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import {
+            assertArrayNotEmpty,
+            assertFound,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalDateString,
+            optionalEnum,
+            optionalNumber,
+            optionalString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const taskId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;id&quot;, taskId)
+                .maybeSingle();
+              throwIfPostgrestError(error);
+              return jsonOk(assertFound(data));
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function PATCH(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              const taskId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data: profile, error: profileError } = await supabase
+                .from(&quot;profiles&quot;)
+                .select(&quot;role&quot;)
+                .eq(&quot;id&quot;, user.id)
+                .maybeSingle();
+              throwIfPostgrestError(profileError);
+              const role = profile?.role ?? &quot;member&quot;;
+          
+              const body = await readJson&lt;{
+                title?: string;
+                unit?: string;
+                planned_qty?: number;
+                planned_hours?: number;
+                start_date?: string;
+                end_date?: string;
+                status?: string;
+                assigned_to?: string;
+                approval_status?: string;
+              }&gt;(request);
+          
+              const updates: Record&lt;string, string | number&gt; = {};
+          
+              const title = optionalString(body?.title, &quot;title&quot;);
+              if (title !== undefined) updates.title = title;
+          
+              const unit = optionalString(body?.unit, &quot;unit&quot;);
+              if (unit !== undefined) updates.unit = unit;
+          
+              const plannedQty = optionalNumber(body?.planned_qty, &quot;planned_qty&quot;);
+              if (plannedQty !== undefined) updates.planned_qty = plannedQty;
+          
+              const plannedHours = optionalNumber(body?.planned_hours, &quot;planned_hours&quot;);
+              if (plannedHours !== undefined) updates.planned_hours = plannedHours;
+          
+              const startDate = optionalDateString(body?.start_date, &quot;start_date&quot;);
+              if (startDate !== undefined) updates.start_date = startDate;
+          
+              const endDate = optionalDateString(body?.end_date, &quot;end_date&quot;);
+              if (endDate !== undefined) updates.end_date = endDate;
+          
+              const status = optionalEnum(body?.status, TASK_STATUSES, &quot;status&quot;);
+              if (status !== undefined) updates.status = status;
+          
+              const assignedTo = optionalString(body?.assigned_to, &quot;assigned_to&quot;);
+              if (assignedTo !== undefined) {
+                if (role === &quot;member&quot;) {
+                  throw new HttpError(400, &quot;Members cannot reassign tasks.&quot;);
+                }
+                updates.assigned_to = assignedTo;
+              }
+          
+              const approvalStatus = optionalEnum(
+                body?.approval_status,
+                TASK_APPROVAL_STATUSES,
+                &quot;approval_status&quot;,
+              );
+              if (approvalStatus !== undefined) {
+                if (role === &quot;member&quot; &amp;&amp; approvalStatus === &quot;approved&quot;) {
+                  throw new HttpError(
+                    400,
+                    &quot;Members can only move tasks to draft or pending.&quot;,
+                  );
+                }
+                updates.approval_status = approvalStatus;
+              }
+          
+              if (Object.keys(updates).length === 0) {
+                throw new HttpError(400, &quot;No fields to update&quot;);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .update(updates)
+                .eq(&quot;id&quot;, taskId)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function DELETE(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const taskId = requireUuid(params.id, &quot;id&quot;);
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .delete()
+                .eq(&quot;id&quot;, taskId)
+                .select(&quot;id&quot;);
+              throwIfPostgrestError(error);
+              assertArrayNotEmpty(data);
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 29: Add task approve route</h3>
+          <p>The student adds /tasks/:id/approve.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/tasks/[id]/approve/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const taskId = requireUuid(params.id, &quot;id&quot;);
+              const { data, error } = await supabase
+                .from(&quot;tasks&quot;)
+                .update({ approval_status: &quot;approved&quot; })
+                .eq(&quot;id&quot;, taskId)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 30: Add work log update/delete</h3>
+          <p>The student adds PATCH/DELETE for /work-logs/:id.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/work-logs/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { HttpError } from &quot;@/lib/api/errors&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import {
+            assertArrayNotEmpty,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalNumber,
+            optionalString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function PATCH(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const workLogId = requireUuid(params.id, &quot;id&quot;);
+              const body = await readJson&lt;{
+                qty_done?: number;
+                hours?: number;
+                note?: string;
+              }&gt;(request);
+          
+              const updates: Record&lt;string, string | number&gt; = {};
+              const qtyDone = optionalNumber(body?.qty_done, &quot;qty_done&quot;);
+              if (qtyDone !== undefined) updates.qty_done = qtyDone;
+              const hours = optionalNumber(body?.hours, &quot;hours&quot;);
+              if (hours !== undefined) updates.hours = hours;
+              const note = optionalString(body?.note, &quot;note&quot;);
+              if (note !== undefined) updates.note = note;
+          
+              if (Object.keys(updates).length === 0) {
+                throw new HttpError(400, &quot;No fields to update&quot;);
+              }
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .update(updates)
+                .eq(&quot;id&quot;, workLogId)
+                .eq(&quot;status&quot;, &quot;pending&quot;)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function DELETE(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const workLogId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .delete()
+                .eq(&quot;id&quot;, workLogId)
+                .eq(&quot;status&quot;, &quot;pending&quot;)
+                .select(&quot;id&quot;);
+              throwIfPostgrestError(error);
+              assertArrayNotEmpty(data);
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 31: Add work log approval lookup</h3>
+          <p>The student adds /work-logs/:id/approval.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/work-logs/[id]/approval/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { assertFound, throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const workLogId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;approvals&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;work_log_id&quot;, workLogId)
+                .maybeSingle();
+              throwIfPostgrestError(error);
+              return jsonOk(assertFound(data));
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 32: Add work log approve/reject</h3>
+          <p>The student adds manager actions for approvals.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/work-logs/[id]/approve/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { assertFound, throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { optionalString, requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const workLogId = requireUuid(params.id, &quot;id&quot;);
+              const body = await readJson&lt;{ note?: string }&gt;(request);
+              const note = optionalString(body?.note, &quot;note&quot;);
+          
+              const { data: workLog, error: updateError } = await supabase
+                .from(&quot;work_logs&quot;)
+                .update({ status: &quot;approved&quot; })
+                .eq(&quot;id&quot;, workLogId)
+                .eq(&quot;status&quot;, &quot;pending&quot;)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(updateError);
+              assertFound(workLog);
+          
+              const { data, error } = await supabase
+                .from(&quot;approvals&quot;)
+                .insert({
+                  work_log_id: workLogId,
+                  approved_by: user.id,
+                  approved_at: new Date().toISOString(),
+                  status: &quot;approved&quot;,
+                  note: note ?? null,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/work-logs/[id]/reject/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { assertFound, throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireString, requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const workLogId = requireUuid(params.id, &quot;id&quot;);
+              const body = await readJson&lt;{ note?: string }&gt;(request);
+              const note = requireString(body?.note, &quot;note&quot;);
+          
+              const { data: workLog, error: updateError } = await supabase
+                .from(&quot;work_logs&quot;)
+                .update({ status: &quot;rejected&quot; })
+                .eq(&quot;id&quot;, workLogId)
+                .eq(&quot;status&quot;, &quot;pending&quot;)
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(updateError);
+              assertFound(workLog);
+          
+              const { data, error } = await supabase
+                .from(&quot;approvals&quot;)
+                .insert({
+                  work_log_id: workLogId,
+                  approved_by: user.id,
+                  approved_at: new Date().toISOString(),
+                  status: &quot;rejected&quot;,
+                  note,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 33: Add task work logs list/create</h3>
+          <p>The student adds /tasks/:taskId/work-logs.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/tasks/[taskId]/work-logs/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { assertFound, throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalNumber,
+            optionalString,
+            requireDateString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { taskId: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const taskId = requireUuid(params.taskId, &quot;taskId&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;task_id&quot;, taskId);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function POST(
+            request: NextRequest,
+            { params }: { params: { taskId: string } },
+          ) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              const taskId = requireUuid(params.taskId, &quot;taskId&quot;);
+          
+              const body = await readJson&lt;{
+                log_date?: string;
+                qty_done?: number | null;
+                hours?: number | null;
+                note?: string;
+              }&gt;(request);
+              const logDate = requireDateString(body?.log_date, &quot;log_date&quot;);
+              const qtyDone = optionalNumber(body?.qty_done, &quot;qty_done&quot;);
+              const hours = optionalNumber(body?.hours, &quot;hours&quot;);
+              const note = optionalString(body?.note, &quot;note&quot;);
+          
+              const { data: task, error: taskError } = await supabase
+                .from(&quot;tasks&quot;)
+                .select(&quot;project_id&quot;)
+                .eq(&quot;id&quot;, taskId)
+                .maybeSingle();
+              throwIfPostgrestError(taskError);
+              const taskRow = assertFound(task);
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .insert({
+                  task_id: taskId,
+                  project_id: taskRow.project_id,
+                  user_id: user.id,
+                  log_date: logDate,
+                  qty_done: qtyDone ?? null,
+                  hours: hours ?? null,
+                  note: note ?? null,
+                  status: &quot;pending&quot;,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 34: Add project work logs list</h3>
+          <p>The student adds /projects/:projectId/work-logs.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/projects/[projectId]/work-logs/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { projectId: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const projectId = requireUuid(params.projectId, &quot;projectId&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;project_id&quot;, projectId);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 35: Add approvals list</h3>
+          <p>The student adds /approvals/pending.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/approvals/pending/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireRole } from &quot;@/lib/api/roles&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              await requireRole(supabase, user.id, [&quot;manager&quot;]);
+          
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;status&quot;, &quot;pending&quot;);
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 36: Add dashboard summary</h3>
+          <p>The student adds /dashboard/summary.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/dashboard/summary/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const { data, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;hours, qty_done, status&quot;);
+              throwIfPostgrestError(error);
+          
+              const summary = {
+                total_hours: 0,
+                total_qty: 0,
+                pending_approvals: 0,
+                approved_hours: 0,
+                approved_qty: 0,
+                rejected_count: 0,
+              };
+          
+              for (const log of data ?? []) {
+                summary.total_hours += Number(log.hours ?? 0);
+                summary.total_qty += Number(log.qty_done ?? 0);
+                if (log.status === &quot;pending&quot;) {
+                  summary.pending_approvals += 1;
+                }
+                if (log.status === &quot;approved&quot;) {
+                  summary.approved_hours += Number(log.hours ?? 0);
+                  summary.approved_qty += Number(log.qty_done ?? 0);
+                }
+                if (log.status === &quot;rejected&quot;) {
+                  summary.rejected_count += 1;
+                }
+              }
+          
+              return jsonOk(summary);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 37: Add reports (project, user, company)</h3>
+          <p>The student adds report endpoints that summarize work logs.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/reports/project/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { summarizeWorkLogs } from &quot;@/lib/api/reports&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { assertFound, throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const projectId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data: project, error: projectError } = await supabase
+                .from(&quot;projects&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;id&quot;, projectId)
+                .maybeSingle();
+              throwIfPostgrestError(projectError);
+              const projectRow = assertFound(project);
+          
+              const { data: tasks, error: tasksError } = await supabase
+                .from(&quot;tasks&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;project_id&quot;, projectId);
+              throwIfPostgrestError(tasksError);
+          
+              const { data: workLogs, error: logsError } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;project_id&quot;, projectId);
+              throwIfPostgrestError(logsError);
+          
+              return jsonOk({
+                project: projectRow,
+                tasks: tasks ?? [],
+                work_logs: workLogs ?? [],
+                summary: summarizeWorkLogs(workLogs ?? []),
+              });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/reports/user/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { summarizeWorkLogs } from &quot;@/lib/api/reports&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const userId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data: workLogs, error } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;)
+                .eq(&quot;user_id&quot;, userId);
+              throwIfPostgrestError(error);
+          
+              return jsonOk({
+                user_id: userId,
+                work_logs: workLogs ?? [],
+                summary: summarizeWorkLogs(workLogs ?? []),
+              });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/reports/company/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { summarizeWorkLogs } from &quot;@/lib/api/reports&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { throwIfPostgrestError } from &quot;@/lib/api/supabase-helpers&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+          
+              const { data: projects, error: projectsError } = await supabase
+                .from(&quot;projects&quot;)
+                .select(&quot;*&quot;);
+              throwIfPostgrestError(projectsError);
+          
+              const { data: workLogs, error: logsError } = await supabase
+                .from(&quot;work_logs&quot;)
+                .select(&quot;*&quot;);
+              throwIfPostgrestError(logsError);
+          
+              return jsonOk({
+                projects: projects ?? [],
+                summary: summarizeWorkLogs(workLogs ?? []),
+              });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 38: Add attachments list/create</h3>
+          <p>The student adds /attachments for list and create.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/attachments/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import {
+            assertArrayNotEmpty,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import {
+            optionalString,
+            requireString,
+            requireUuid,
+          } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function GET(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const taskId = request.nextUrl.searchParams.get(&quot;task_id&quot;) ?? undefined;
+          
+              let query = supabase.from(&quot;attachments&quot;).select(&quot;*&quot;);
+              if (taskId) {
+                requireUuid(taskId, &quot;task_id&quot;);
+                query = query.eq(&quot;task_id&quot;, taskId);
+              }
+          
+              const { data, error } = await query;
+              throwIfPostgrestError(error);
+              return jsonOk(data ?? []);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+          
+          export async function POST(request: NextRequest) {
+            try {
+              const { supabase, user } = await requireAuth(request);
+              const body = await readJson&lt;{
+                path?: string;
+                project_id?: string;
+                task_id?: string;
+                work_log_id?: string;
+                kind?: string;
+              }&gt;(request);
+          
+              const path = requireString(body?.path, &quot;path&quot;);
+              const projectId = requireString(body?.project_id, &quot;project_id&quot;);
+              const taskId = requireString(body?.task_id, &quot;task_id&quot;);
+              const workLogId = optionalString(body?.work_log_id, &quot;work_log_id&quot;);
+              const kind = requireString(body?.kind, &quot;kind&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;attachments&quot;)
+                .insert({
+                  path,
+                  project_id: projectId,
+                  task_id: taskId,
+                  work_log_id: workLogId ?? null,
+                  kind,
+                  created_by: user.id,
+                })
+                .select(&quot;*&quot;)
+                .single();
+              throwIfPostgrestError(error);
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 39: Add attachment delete</h3>
+          <p>The student adds DELETE /attachments/:id.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/attachments/[id]/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import {
+            assertArrayNotEmpty,
+            throwIfPostgrestError,
+          } from &quot;@/lib/api/supabase-helpers&quot;;
+          import { requireUuid } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function DELETE(
+            request: NextRequest,
+            { params }: { params: { id: string } },
+          ) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const attachmentId = requireUuid(params.id, &quot;id&quot;);
+          
+              const { data, error } = await supabase
+                .from(&quot;attachments&quot;)
+                .delete()
+                .eq(&quot;id&quot;, attachmentId)
+                .select(&quot;id&quot;);
+              throwIfPostgrestError(error);
+              assertArrayNotEmpty(data);
+              return jsonOk({ ok: true });
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+
+        <section>
+          <h3>Step 40: Add upload URL route (Edge)</h3>
+          <p>The student adds signed upload URL creation via Edge.</p>
+          <pre><code class="language-ts" data-trim>
+          # ADD file: frontend/app/api/attachments/upload-url/route.ts
+          import type { NextRequest } from &quot;next/server&quot;;
+          import { requireAuth } from &quot;@/lib/api/auth&quot;;
+          import { invokeEdgeFunction } from &quot;@/lib/api/edge&quot;;
+          import { readJson } from &quot;@/lib/api/request&quot;;
+          import { jsonError, jsonOk } from &quot;@/lib/api/response&quot;;
+          import { requireString } from &quot;@/lib/api/validation&quot;;
+          
+          export const dynamic = &quot;force-dynamic&quot;;
+          
+          export async function POST(request: NextRequest) {
+            try {
+              const { supabase } = await requireAuth(request);
+              const body = await readJson&lt;{ filename?: string; task_id?: string }&gt;(
+                request,
+              );
+              const filename = requireString(body?.filename, &quot;filename&quot;);
+              const taskId = requireString(body?.task_id, &quot;task_id&quot;);
+              const data = await invokeEdgeFunction&lt;{ url: string; path: string }&gt;(
+                supabase,
+                &quot;attachments-upload-url&quot;,
+                { filename, task_id: taskId },
+              );
+              return jsonOk(data);
+            } catch (err) {
+              return jsonError(err);
+            }
+          }
+                    </code></pre>
+        </section>
+        <section class="two-col">
+          <div>
+            <h2>Local Execution</h2>
+            <pre><code class="language-bash" data-trim>
+supabase start
+supabase functions serve --env-file supabase/functions/.env
+cd frontend
+npm run dev
+            </code></pre>
+          </div>
+          <div>
+            <h2>Cloud Deployment</h2>
+            <pre><code class="language-bash" data-trim>
+supabase login
+supabase link --project-ref YOUR_REF
+supabase secrets set FRONTEND_URL="https://your-app"
+supabase secrets set SUPABASE_ATTACHMENTS_BUCKET="attachments"
+supabase functions deploy
+            </code></pre>
+          </div>
+        </section>
+
+        <section>
+          <h2>Validation Checklist</h2>
+          <ul>
+            <li>All API calls succeed using /api base URL.</li>
+            <li>Invites and upload URLs return correct responses.</li>
+            <li>Profile updates succeed even with restrictive RLS.</li>
+            <li>Auth redirects return to the correct frontend origin.</li>
+            <li>Edge Functions return structured JSON errors.</li>
+          </ul>
+        </section>
+
+        <section class="closing" data-background-gradient="linear-gradient(135deg, #1b1f2a 0%, #1f3a52 55%, #1b4f6b 100%)">
+          <h2>Outcome</h2>
+          <p>
+            The system is now a Next.js-first full-stack app with a clean
+            privileged boundary in Supabase Edge Functions. The migration
+            preserves domain behavior while improving security and deployability.
+          </p>
+          <p class="small">End of presentation</p>
+        </section>
+      </div>
+    </div>
+
+    <script src="node_modules/reveal.js/dist/reveal.js"></script>
+    <script src="node_modules/reveal.js/plugin/notes/notes.js"></script>
+    <script src="node_modules/reveal.js/plugin/highlight/highlight.js"></script>
+    <script>
+      Reveal.initialize({
+        hash: true,
+        slideNumber: true,
+        transition: "fade",
+        backgroundTransition: "fade",
+        plugins: [RevealNotes, RevealHighlight],
+      });
+
+      function updateNavState() {
+        const prevBtn = document.querySelector(
+          ".reveal .controls button.navigate-left",
+        );
+        const nextBtn = document.querySelector(
+          ".reveal .controls button.navigate-right",
+        );
+        if (!prevBtn || !nextBtn) {
+          return;
+        }
+        const index = Reveal.getIndices();
+        const total = Reveal.getTotalSlides();
+        const flatIndex = Reveal.getSlidePastCount();
+        const atStart = flatIndex <= 0;
+        const atEnd = flatIndex >= total - 1;
+        prevBtn.disabled = atStart;
+        nextBtn.disabled = atEnd;
+        prevBtn.setAttribute("aria-disabled", String(atStart));
+        nextBtn.setAttribute("aria-disabled", String(atEnd));
+      }
+
+      Reveal.on("ready", updateNavState);
+      Reveal.on("slidechanged", updateNavState);
+      Reveal.on("slidetransitionend", updateNavState);
+
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+        if (target.closest(".navigate-left")) {
+          event.preventDefault();
+          if (Reveal.getSlidePastCount() > 0) {
+            Reveal.navigatePrev();
+          }
+        }
+        if (target.closest(".navigate-right")) {
+          event.preventDefault();
+          if (Reveal.getSlidePastCount() < Reveal.getTotalSlides() - 1) {
+            Reveal.navigateNext();
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
